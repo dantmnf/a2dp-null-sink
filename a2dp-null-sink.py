@@ -1,21 +1,17 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
-import socket
 import dbus
 import dbus.service
 import dbus.mainloop.glib
-
-import gi
-gi.require_version('Gst', '1.0')
-from gi.repository import GObject, Gst
+from gi.repository import GLib
 
 import argparse
 
-argparser = argparse.ArgumentParser(description='Send bluetooth audio to alsa card')
-argparser.add_argument('--alsa-device', '-d', dest='alsadev', help='Alsa device')
+dbus.Dict
+
+argparser = argparse.ArgumentParser(description='A2DP null sink')
 argparser.add_argument('--adapter', '-a', dest='adapter', help='Bluetooth adapter', default='hci0')
-
-
+argparser.add_argument('--codec', '-c', dest='codecs', help='Configure supported additional codecs: none, mp3, aac, aptx, aptxhd, ldac', default='mp3,aac,aptx,aptxhd,ldac')
 
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
@@ -29,6 +25,13 @@ MP3_CODEC = dbus.Byte(0x01)
 MP3_CAPABILITIES = dbus.Array([dbus.Byte(0x3f), dbus.Byte(0x07), dbus.Byte(0xff), dbus.Byte(0xfe)])
 MP3_CONFIGURATION = dbus.Array([dbus.Byte(0x21), dbus.Byte(0x02), dbus.Byte(0x00), dbus.Byte(0x80)])
 
+AAC_CODEC = dbus.Byte(2)
+AAC_CAPABILITIES = dbus.ByteArray(b'\xC0\xFF\xFC\x80\xFF\xFF')
+
+VENDOR_CODEC = dbus.Byte(0xFF)
+APTX_CAPABILITIES = dbus.ByteArray(b'\x4F\x00\x00\x00\x01\x00\xF2')
+APTXHD_CAPABILITIES = dbus.ByteArray(b'\xd7\x00\x00\x00\x24\x00\xF2\x00\x00\x00\x00')
+LDAC_CAPABILITIES = dbus.ByteArray(b'\x2d\x01\x00\x00\xaa\x00\x3f\x01')
 
 class Bluez():
     
@@ -53,7 +56,7 @@ class Bluez():
                 self.adapters[adapt_name].agentRegister()
                
     def _interfaceAdded(self, path, interface):
-        print("_interfaceAdded " + path + " | " + str(interface))
+        # print("_interfaceAdded " + path + " | " + str(interface))
         adapt_name = path.split('/')[3]
         if 'org.bluez.Adapter1' in interface:
             self.adapters[adapt_name] = Adapter(self.bus, path)
@@ -62,7 +65,7 @@ class Bluez():
             self.adapters[adapt_name]._interfaceAdded(path, interface)
                 
     def _interfaceRemoved(self, path, interface):
-        print("_interfaceRemoved " + path + " | " + str(interface))
+        # print("_interfaceRemoved " + path + " | " + str(interface))
         spath = path.split('/')
         if len(spath) < 4:
             return
@@ -76,7 +79,7 @@ class Bluez():
         if not path.startswith("/org/bluez/"):
             return
 
-        print("_propertiesChanged " + path + " | " + str(interface) + " | " + str(changed) + " | " + str(invalidated))
+        # print("_propertiesChanged " + path + " | " + str(interface) + " | " + str(changed) + " | " + str(invalidated))
 
         adapt_name = path.split('/')[3]
         if adapt_name in self.adapters:
@@ -110,7 +113,7 @@ class Adapter():
         print("Removed adapter " + self.path)
 
     def _interfaceAdded(self, path, interface):
-        print("adapter _interfaceAdded " + path)
+        # print("adapter _interfaceAdded " + path)
         spath = path.split('/')
         dev_name = spath[4]
         if 'org.bluez.Device1' in interface:
@@ -119,7 +122,7 @@ class Adapter():
             self.devices[dev_name]._interfaceAdded(path, interface)
         
     def _interfaceRemoved(self, path, interface):
-        print("adapter _interfaceRemoved " + path)
+        # print("adapter _interfaceRemoved " + path)
         spath = path.split('/')
         if len(spath) < 5:
             return
@@ -130,7 +133,7 @@ class Adapter():
             self.devices[dev_name]._interfaceRemoved(path, interface)
 
     def _propertiesChanged(self, interface, changed, invalidated, path):
-        print("adapter _propertiesChanged " + path)
+        # print("adapter _propertiesChanged " + path)
         spath = path.split('/')
         if len(spath) >= 5:
             dev_name  = spath[4]
@@ -147,14 +150,53 @@ class Adapter():
     def discoverableSet(self, status):
         print("Making adapter " + self.path + " discoverable")
         self.prop.Set("org.bluez.Adapter1", "Discoverable", dbus.Boolean(status))
+    
+    def pairableSet(self, status):
+        print("Making adapter " + self.path + " pairable")
+        self.prop.Set("org.bluez.Adapter1", "Pairable", dbus.Boolean(status))
 
-    def mediaEndpointRegister(self):
+    def mediaEndpointRegister(self, codecs):
         media = dbus.Interface(self.bus.get_object("org.bluez", self.path), "org.bluez.Media1")
-        media_path = '/test/endpoint_' + self.path.split('/')[3]
-        self.mediaEndpoint = MediaEndpoint(self.bus, media_path)
+        media_path = '/test/endpoint_sbc_' + self.path.split('/')[3]
+        self.sbcMediaEndpoint = MediaEndpoint(self.bus, media_path, "sbc")
         properties = dbus.Dictionary({ "UUID" : A2DP_SINK_UUID, "Codec" : SBC_CODEC, "DelayReporting" : True, "Capabilities" : SBC_CAPABILITIES })
         media.RegisterEndpoint(media_path, properties)
-        print("MediaEndpoint registered for " + self.path)
+        print("SBC MediaEndpoint registered for " + self.path)
+
+        if "mp3" in codecs:
+            media_path = '/test/endpoint_mp3_' + self.path.split('/')[3]
+            self.aacMediaEndpoint = MediaEndpoint(self.bus, media_path, "mp3")
+            properties = dbus.Dictionary({ "UUID" : A2DP_SINK_UUID, "Codec" : MP3_CODEC, "DelayReporting" : True, "Capabilities" : MP3_CAPABILITIES })
+            media.RegisterEndpoint(media_path, properties)
+            print("MP3 MediaEndpoint registered for " + self.path)
+
+        if "aac" in codecs:
+            media_path = '/test/endpoint_aac_' + self.path.split('/')[3]
+            self.aacMediaEndpoint = MediaEndpoint(self.bus, media_path, "aac")
+            properties = dbus.Dictionary({ "UUID" : A2DP_SINK_UUID, "Codec" : AAC_CODEC, "DelayReporting" : True, "Capabilities" : AAC_CAPABILITIES })
+            media.RegisterEndpoint(media_path, properties)
+            print("AAC MediaEndpoint registered for " + self.path)
+
+        if "aptx" in codecs:
+            media_path = '/test/endpoint_aptx_' + self.path.split('/')[3]
+            self.aptxMediaEndpoint = MediaEndpoint(self.bus, media_path, "aptx")
+            properties = dbus.Dictionary({ "UUID" : A2DP_SINK_UUID, "Codec" : VENDOR_CODEC, "DelayReporting" : True, "Capabilities" : APTX_CAPABILITIES })
+            media.RegisterEndpoint(media_path, properties)
+            print("aptX MediaEndpoint registered for " + self.path)
+
+        if "aptxhd" in codecs:
+            media_path = '/test/endpoint_aptxhd_' + self.path.split('/')[3]
+            self.aptxhdMediaEndpoint = MediaEndpoint(self.bus, media_path, "aptxhd")
+            properties = dbus.Dictionary({ "UUID" : A2DP_SINK_UUID, "Codec" : VENDOR_CODEC, "DelayReporting" : True, "Capabilities" : APTXHD_CAPABILITIES })
+            media.RegisterEndpoint(media_path, properties)
+            print("aptXHD MediaEndpoint registered for " + self.path)
+
+        if "ldac" in codecs:
+            media_path = '/test/endpoint_ldac_' + self.path.split('/')[3]
+            self.aptxhdMediaEndpoint = MediaEndpoint(self.bus, media_path, "ldac")
+            properties = dbus.Dictionary({ "UUID" : A2DP_SINK_UUID, "Codec" : VENDOR_CODEC, "DelayReporting" : True, "Capabilities" : LDAC_CAPABILITIES })
+            media.RegisterEndpoint(media_path, properties)
+            print("LDAC MediaEndpoint registered for " + self.path)
 
     def agentRegister(self):
         agent_path = '/test/agent_' + self.path.split('/')[3]
@@ -168,16 +210,17 @@ class Adapter():
 class Device():
 
     def __init__(self, bus, path):
-        print("New device " + path)
+        # print("New device " + path)
         self.bus = bus
         self.path = path
         self.mediaTransports = {}
 
     def __del__(self):
-        print("Removed device " + self.path)
+        # print("Removed device " + self.path)
+        return
 
     def _interfaceAdded(self, path, interface):
-        print("device _interfaceAdded " + path)
+        # print("device _interfaceAdded " + path)
         spath = path.split('/')
         if len(spath) < 6:
             return
@@ -186,13 +229,13 @@ class Device():
             self.mediaTransports[obj_name] = MediaTransport(self.bus, path)
 
     def _interfaceRemoved(self, path, interface):
-        print("device _interfaceRemoved " + path)
+        # print("device _interfaceRemoved " + path)
         obj_name = path.split('/')[5]
         if 'org.bluez.MediaTransport1' in interface and obj_name in self.mediaTransports:
             del self.mediaTransports[obj_name]
 
     def _propertiesChanged(self, interface, changed, invalidated, path):
-        print("device _propertiesChanged " + path)
+        # print("device _propertiesChanged " + path)
         spath = path.split('/')
 
         if len(spath) >= 6:
@@ -202,25 +245,26 @@ class Device():
 
 class MediaEndpoint(dbus.service.Object):
 
-    def __init__(self, bus, path):
+    def __init__(self, bus, path, codec):
         self.bus = bus
         self.path = path
+        self.codec = codec
         super(MediaEndpoint, self).__init__(bus, path)
 
     @dbus.service.method("org.bluez.MediaEndpoint1", in_signature="ay", out_signature="ay")
     def SelectConfiguration(self, caps):
-        print("SelectConfiguration (%s)" % (caps))
+        print("[%s] SelectConfiguration (%s)" % (self.codec, caps))
         return self.configuration
 
 
     @dbus.service.method("org.bluez.MediaEndpoint1", in_signature="oay", out_signature="")
     def SetConfiguration(self, transport, config):
-        print("SetConfiguration (%s, %s)" % (transport, config))
+        print("[%s] SetConfiguration (%s, %s)" % (self.codec, transport, config))
         return
 
     @dbus.service.method("org.bluez.MediaEndpoint1", in_signature="o", out_signature="")
     def ClearConfiguration(self, transport):
-        print("ClearConfiguration (%s)" % (transport))
+        print("[%s] ClearConfiguration (%s)" % (self.codec, transport))
 
 
     @dbus.service.method("org.bluez.MediaEndpoint1", in_signature="", out_signature="")
@@ -231,60 +275,19 @@ class MediaEndpoint(dbus.service.Object):
 class MediaTransport():
 
     def __init__(self, bus, path):
-        print("New media transport " + path)
+        # print("New media transport " + path)
         self.bus = bus
         self.path = path
         self.pipeline = None
 
     def __del__(self):
-        print("Removed media transport " + self.path)
+        None
+        # print("Removed media transport " + self.path)
 
     def _propertiesChanged(self, interface, changed, invalidated, path):
-        print("mediaTransport _propertiesChanged " + path)
+        # print("mediaTransport _propertiesChanged " + path)
+        return
 
-        if 'State' in changed and changed['State'] == 'pending':
-            if self.pipeline:
-                return
-
-            self.pipeline = Gst.Pipeline.new("player")
-
-            gst_bus = self.pipeline.get_bus()
-            gst_bus.add_signal_watch()
-            gst_bus.connect("message", self._gst_on_message)
-
-            source = Gst.ElementFactory.make("avdtpsrc", "bluetooth-source")
-            depay = Gst.ElementFactory.make("rtpsbcdepay", "depayloader")
-            parse = Gst.ElementFactory.make("sbcparse", "parser")
-            decoder = Gst.ElementFactory.make("sbcdec", "decoder")
-            converter = Gst.ElementFactory.make("audioconvert", "converter")
-            sink = Gst.ElementFactory.make("alsasink", "alsa-output")
-
-            self.pipeline.add(source)
-            self.pipeline.add(depay)
-            self.pipeline.add(parse)
-            self.pipeline.add(decoder)
-            self.pipeline.add(converter)
-            self.pipeline.add(sink)
-
-            print(source.link(depay))
-            print(depay.link(parse))
-            print(parse.link(decoder))
-            print(decoder.link(converter))
-            print(converter.link(sink))
-
-            source.set_property("transport", path)
-            if args.alsadev:
-                sink.set_property("device", args.alsadev)
-
-            self.pipeline.set_state(Gst.State.PLAYING)
-
-    def _gst_on_message(self, gst_bus, message):
-        t = message.type
-        if t == Gst.MessageType.ERROR:
-            err, debug = message.parse_error()
-            print("Error : %s " % err, debug)
-        else:
-            print(message.type, message.src)
 
 class Rejected(dbus.DBusException):
     _dbus_error_name = "org.bluez.Error.Rejected"
@@ -326,12 +329,9 @@ def main():
 
     adapt.powerSet(True)
     adapt.discoverableSet(True)
-    adapt.mediaEndpointRegister()
+    adapt.mediaEndpointRegister(tuple(x.strip() for x in args.codecs.split(",")))
 
-
-    Gst.init(None)
-    GObject.threads_init()
-    mainloop = GObject.MainLoop()
+    mainloop = GLib.MainLoop()
     mainloop.run()
     return
 
